@@ -1,4 +1,4 @@
-# ✈️ FlightXAI — Explainable Flight Delay Prediction
+# FlightXAI — Explainable Flight Delay Prediction
 
 FlightXAI is an end-to-end Explainable AI (XAI) system that predicts
 U.S. domestic flight delays using XGBoost and then opens the black box with
