@@ -51,6 +51,7 @@ objectives.
                     │  Tab 1: Prediction                │
                     │  Tab 2: Why? (SHAP + LIME)        │
                     │  Tab 3: What if? (DiCE)           │
+                    │  Tab 4: Model Performance         │
                     └──────────────────────────────────┘
                           http://localhost:8501
 ```
@@ -128,12 +129,12 @@ Open **http://localhost:8501** in your browser.
 | Module                | What It Produces                                                                   |
 | :-------------------- | :--------------------------------------------------------------------------------- |
 | `preprocess.py`       | `data/processed/train.parquet`, `test.parquet`, `outputs/feature_artifacts.joblib` |
-| `train.py`            | `outputs/xgb_model.joblib`, `lr_model.joblib`, `model_metrics.json`, `outputs/plots/roc_curve.png` |
+| `train.py`            | `outputs/xgb_model.joblib`, `lr_model.joblib`, `model_metrics.json` (includes confusion matrix + ROC curve data), `outputs/plots/roc_curve.png` |
 | `explain_shap.py`     | `outputs/plots/shap_summary_bar.png`, `shap_summary_dot.png`, `shap_dependence_top3.png` |
 | `explain_lime.py`     | `outputs/plots/lime_example.png`                                                  |
 | `explain_dice.py`     | Console table of counterfactual scenarios for 3 delayed flights                   |
 | `evaluate.py`         | `outputs/reports/evaluation_report.json` + console summary table                  |
-| `dashboard/app.py`    | Interactive Streamlit app with Prediction / Why? / What if? tabs                  |
+| `dashboard/app.py`    | Interactive Streamlit app with Prediction / Why? / What if? / Model Performance tabs |
 
 ---
 

@@ -10,6 +10,7 @@ Run with:
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from datetime import date
@@ -33,6 +34,7 @@ from config import (
     OUTPUT_DIR,
     PREDICTION_THRESHOLD,
     TARGET_COLUMN,
+    TEST_DATA_PATH,
     TRAIN_DATA_PATH,
 )
 
@@ -163,6 +165,54 @@ st.markdown("""
         height: 1px;
         background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent);
         margin: 1.4rem 0;
+    }
+
+    /* Performance metric mini-cards */
+    .perf-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        gap: 1rem;
+        margin-bottom: 1.5rem;
+    }
+    .perf-card {
+        background: linear-gradient(145deg, #1a1a2e 0%, #16213e 60%, #0f3460 100%);
+        border-radius: 16px;
+        padding: 1.4rem 1.2rem;
+        text-align: center;
+        border: 1px solid rgba(102,126,234,0.2);
+        box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+    .perf-card:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 8px 28px rgba(102,126,234,0.25);
+    }
+    .perf-card .perf-label {
+        font-size: 0.72rem;
+        font-weight: 600;
+        color: #8892a4;
+        text-transform: uppercase;
+        letter-spacing: 1.4px;
+        margin-bottom: 0.35rem;
+    }
+    .perf-card .perf-value {
+        font-size: 2.2rem;
+        font-weight: 800;
+        line-height: 1.1;
+        margin: 0.15rem 0 0.1rem;
+    }
+    .perf-card .perf-sub {
+        font-size: 0.73rem;
+        color: #5a6478;
+    }
+    .section-label {
+        font-size: 0.8rem;
+        font-weight: 700;
+        color: #667eea;
+        text-transform: uppercase;
+        letter-spacing: 2px;
+        margin-bottom: 0.5rem;
+        margin-top: 1.2rem;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -504,6 +554,201 @@ def _model_table(xgb_prob: float, lr_prob: float) -> pd.DataFrame:
     })
 
 
+def _confusion_matrix_plotly(cm: list[list[int]], model_name: str) -> go.Figure:
+    """Interactive annotated heatmap for a 2×2 confusion matrix."""
+    labels = ["On Time (0)", "Delayed (1)"]
+    tn, fp, fn, tp = cm[0][0], cm[0][1], cm[1][0], cm[1][1]
+    z = [[tn, fp], [fn, tp]]
+    # Text annotations with counts and percentages
+    total = tn + fp + fn + tp
+    text = [
+        [f"{tn:,}\n({tn/total:.1%})", f"{fp:,}\n({fp/total:.1%})"],
+        [f"{fn:,}\n({fn/total:.1%})", f"{tp:,}\n({tp/total:.1%})"],
+    ]
+
+    fig = go.Figure(data=go.Heatmap(
+        z=z, x=labels, y=labels,
+        text=text, texttemplate="%{text}",
+        textfont=dict(size=14, color="white"),
+        colorscale=[
+            [0.0, "#0f3460"],
+            [0.5, "#533483"],
+            [1.0, "#e94560"],
+        ],
+        showscale=True,
+        colorbar=dict(
+            title="Count", titlefont=dict(color="#aaa", size=11),
+            tickfont=dict(color="#888", size=10),
+        ),
+        hovertemplate=(
+            "Actual: %{y}<br>Predicted: %{x}<br>"
+            "Count: %{z:,}<extra></extra>"
+        ),
+    ))
+    fig.update_layout(
+        title=dict(
+            text=f"Confusion Matrix — {model_name}",
+            font=dict(size=15, color="#dde"), x=0,
+        ),
+        xaxis=dict(
+            title="Predicted Label", side="bottom",
+            tickfont=dict(color="#ccc", size=12),
+            titlefont=dict(color="#aaa", size=12),
+        ),
+        yaxis=dict(
+            title="Actual Label", autorange="reversed",
+            tickfont=dict(color="#ccc", size=12),
+            titlefont=dict(color="#aaa", size=12),
+        ),
+        height=380,
+        margin=dict(l=80, r=30, t=55, b=60),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#ddd"),
+    )
+    return fig
+
+
+def _roc_curve_plotly(metrics: dict) -> go.Figure:
+    """Interactive ROC curve comparing both models from saved data."""
+    fig = go.Figure()
+
+    colors = {"XGBoost": "#667eea", "Logistic Regression": "#764ba2"}
+    dash_styles = {"XGBoost": "solid", "Logistic Regression": "dot"}
+
+    for model_name in ["XGBoost", "Logistic Regression"]:
+        m = metrics.get(model_name, {})
+        roc_data = m.get("roc_curve")
+        auc_val = m.get("roc_auc", 0)
+        if roc_data:
+            fig.add_trace(go.Scatter(
+                x=roc_data["fpr"], y=roc_data["tpr"],
+                mode="lines",
+                name=f"{model_name} (AUC = {auc_val:.3f})",
+                line=dict(
+                    color=colors.get(model_name, "#ccc"),
+                    width=2.5,
+                    dash=dash_styles.get(model_name, "solid"),
+                ),
+                hovertemplate="FPR: %{x:.3f}<br>TPR: %{y:.3f}<extra></extra>",
+            ))
+
+    # Random chance line
+    fig.add_trace(go.Scatter(
+        x=[0, 1], y=[0, 1],
+        mode="lines",
+        name="Random (AUC = 0.500)",
+        line=dict(color="rgba(255,255,255,0.25)", width=1.5, dash="dash"),
+        hoverinfo="skip",
+    ))
+
+    # Shade under XGBoost curve
+    xgb_roc = metrics.get("XGBoost", {}).get("roc_curve")
+    if xgb_roc:
+        fig.add_trace(go.Scatter(
+            x=xgb_roc["fpr"], y=xgb_roc["tpr"],
+            fill="tozeroy",
+            fillcolor="rgba(102,126,234,0.08)",
+            line=dict(width=0), showlegend=False, hoverinfo="skip",
+        ))
+
+    fig.update_layout(
+        title=dict(
+            text="ROC Curve — Model Comparison",
+            font=dict(size=15, color="#dde"), x=0,
+        ),
+        xaxis=dict(
+            title="False Positive Rate",
+            range=[0, 1],
+            gridcolor="rgba(255,255,255,0.06)",
+            zeroline=False,
+            tickfont=dict(color="#aaa"), titlefont=dict(color="#aaa", size=12),
+        ),
+        yaxis=dict(
+            title="True Positive Rate",
+            range=[0, 1.05],
+            gridcolor="rgba(255,255,255,0.06)",
+            zeroline=False,
+            tickfont=dict(color="#aaa"), titlefont=dict(color="#aaa", size=12),
+        ),
+        height=420,
+        margin=dict(l=60, r=30, t=55, b=50),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#ddd"),
+        legend=dict(
+            x=0.45, y=0.05, bgcolor="rgba(0,0,0,0.4)",
+            bordercolor="rgba(255,255,255,0.1)", borderwidth=1,
+            font=dict(size=11, color="#ccc"),
+        ),
+    )
+    return fig
+
+
+def _metrics_radar_plotly(metrics: dict) -> go.Figure:
+    """Radar/spider chart comparing XGBoost vs LR across key metrics."""
+    radar_keys = ["accuracy", "precision", "recall", "f1_score", "roc_auc"]
+    radar_labels = ["Accuracy", "Precision", "Recall", "F1 Score", "ROC AUC"]
+
+    fig = go.Figure()
+
+    for model_name, color, fill in [
+        ("XGBoost", "#667eea", "rgba(102,126,234,0.15)"),
+        ("Logistic Regression", "#764ba2", "rgba(118,75,162,0.10)"),
+    ]:
+        m = metrics.get(model_name, {})
+        values = [m.get(k, 0) for k in radar_keys]
+        values.append(values[0])  # close the polygon
+
+        fig.add_trace(go.Scatterpolar(
+            r=values,
+            theta=radar_labels + [radar_labels[0]],
+            name=model_name,
+            line=dict(color=color, width=2.5),
+            fill="toself",
+            fillcolor=fill,
+        ))
+
+    fig.update_layout(
+        polar=dict(
+            bgcolor="rgba(0,0,0,0)",
+            radialaxis=dict(
+                visible=True, range=[0, 1],
+                gridcolor="rgba(255,255,255,0.1)",
+                tickfont=dict(color="#888", size=9),
+            ),
+            angularaxis=dict(
+                gridcolor="rgba(255,255,255,0.08)",
+                tickfont=dict(color="#ccc", size=11),
+            ),
+        ),
+        title=dict(
+            text="Model Metrics Radar",
+            font=dict(size=15, color="#dde"), x=0,
+        ),
+        height=420,
+        margin=dict(l=60, r=60, t=55, b=40),
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#ddd"),
+        legend=dict(
+            x=0.82, y=1.05, font=dict(size=11, color="#ccc"),
+            bgcolor="rgba(0,0,0,0)",
+        ),
+    )
+    return fig
+
+
+def _perf_card_html(label: str, value: float, color: str, subtitle: str = "") -> str:
+    """Render a single performance metric as an HTML card."""
+    return f"""
+    <div class="perf-card">
+        <div class="perf-label">{label}</div>
+        <div class="perf-value" style="color:{color};">{value:.2%}</div>
+        <div class="perf-sub">{subtitle}</div>
+    </div>
+    """
+
+
 # ════════════════════════════════════════════════════════════════════════════
 #  Main App
 # ════════════════════════════════════════════════════════════════════════════
@@ -563,10 +808,11 @@ def main() -> None:
     predict_btn = st.sidebar.button("🔍  Predict", use_container_width=True)
 
     # Tabs
-    tab1, tab2, tab3 = st.tabs([
+    tab1, tab2, tab3, tab4 = st.tabs([
         "📊  Prediction",
         "🔬  Why?",
         "🔄  What if?",
+        "📈  Model Performance",
     ])
 
     if not predict_btn:
@@ -787,6 +1033,130 @@ def main() -> None:
                     f"**{', '.join(FEATURE_LABELS.get(f, f) for f in DICE_FEATURES_TO_VARY)}**.  "
                     "All other features are held constant at their original values."
                 )
+
+    # ══════════════════════════════════════════════════════════════════
+    # TAB 4 — Model Performance
+    # ══════════════════════════════════════════════════════════════════
+    with tab4:
+        # Load saved metrics from model_metrics.json
+        metrics_path = os.path.join(OUTPUT_DIR, "model_metrics.json")
+        if not os.path.exists(metrics_path):
+            st.warning(
+                "⚠️ `model_metrics.json` not found. "
+                "Run `python src/train.py` to generate model metrics."
+            )
+        else:
+            with open(metrics_path, "r", encoding="utf-8") as f:
+                all_metrics = json.load(f)
+
+            # ── Section: Key Metrics Cards ───────────────────────────
+            st.markdown('<div class="section-label">Key Performance Metrics</div>', unsafe_allow_html=True)
+
+            for model_name in ["XGBoost", "Logistic Regression"]:
+                m = all_metrics.get(model_name, {})
+                if not m:
+                    continue
+
+                star = " ⭐" if model_name == "XGBoost" else ""
+                st.markdown(f"##### {model_name}{star}")
+
+                accuracy  = m.get("accuracy", 0)
+                precision = m.get("precision", 0)
+                recall    = m.get("recall", 0)
+                f1        = m.get("f1_score", 0)
+                roc_auc   = m.get("roc_auc", 0)
+                brier     = m.get("brier_score", 0)
+
+                cards_html = '<div class="perf-grid">'
+                cards_html += _perf_card_html("Accuracy",  accuracy,  "#64b5f6", "Overall correctness")
+                cards_html += _perf_card_html("Precision", precision, "#ba68c8", "Of predicted delays, % correct")
+                cards_html += _perf_card_html("Recall",    recall,    "#ffb74d", "Of actual delays, % caught")
+                cards_html += _perf_card_html("F1 Score",  f1,        "#4dd0e1", "Harmonic mean P & R")
+                cards_html += _perf_card_html("ROC AUC",   roc_auc,   "#81c784", "Discrimination ability")
+                cards_html += _perf_card_html("Brier Score", brier,   "#e57373", "Calibration (lower = better)")
+                cards_html += '</div>'
+                st.markdown(cards_html, unsafe_allow_html=True)
+
+            st.markdown('<hr class="fancy-divider">', unsafe_allow_html=True)
+
+            # ── Section: Confusion Matrices ──────────────────────────
+            st.markdown('<div class="section-label">Confusion Matrices</div>', unsafe_allow_html=True)
+
+            cm_col1, cm_col2 = st.columns(2, gap="medium")
+
+            xgb_cm = all_metrics.get("XGBoost", {}).get("confusion_matrix")
+            lr_cm  = all_metrics.get("Logistic Regression", {}).get("confusion_matrix")
+
+            if xgb_cm:
+                with cm_col1:
+                    st.plotly_chart(
+                        _confusion_matrix_plotly(xgb_cm, "XGBoost"),
+                        use_container_width=True,
+                    )
+            else:
+                with cm_col1:
+                    st.info("Re-run `python src/train.py` to generate confusion matrix data.")
+
+            if lr_cm:
+                with cm_col2:
+                    st.plotly_chart(
+                        _confusion_matrix_plotly(lr_cm, "Logistic Regression"),
+                        use_container_width=True,
+                    )
+            else:
+                with cm_col2:
+                    st.info("Re-run `python src/train.py` to generate confusion matrix data.")
+
+            st.markdown('<hr class="fancy-divider">', unsafe_allow_html=True)
+
+            # ── Section: ROC Curve + Radar ───────────────────────────
+            st.markdown('<div class="section-label">Model Comparison</div>', unsafe_allow_html=True)
+
+            roc_col, radar_col = st.columns(2, gap="medium")
+
+            has_roc = any(
+                all_metrics.get(mn, {}).get("roc_curve")
+                for mn in ["XGBoost", "Logistic Regression"]
+            )
+
+            with roc_col:
+                if has_roc:
+                    st.plotly_chart(
+                        _roc_curve_plotly(all_metrics),
+                        use_container_width=True,
+                    )
+                else:
+                    st.info(
+                        "ROC curve data not found in metrics. "
+                        "Re-run `python src/train.py` to generate it."
+                    )
+
+            with radar_col:
+                st.plotly_chart(
+                    _metrics_radar_plotly(all_metrics),
+                    use_container_width=True,
+                )
+
+            st.markdown('<hr class="fancy-divider">', unsafe_allow_html=True)
+
+            # ── Section: Interpretation Guide ────────────────────────
+            st.markdown('<div class="section-label">How To Read These Metrics</div>', unsafe_allow_html=True)
+            st.markdown("""
+            | Metric | Meaning | Our Context |
+            |:-------|:--------|:------------|
+            | **Accuracy** | % of all predictions that are correct | Can be misleading with imbalanced classes |
+            | **Precision** | Of flights flagged as delayed, % actually delayed | Low false-alarm rate |
+            | **Recall** | Of flights that *were* delayed, % we caught | Critical — missing a delay is costly |
+            | **F1 Score** | Harmonic mean of Precision & Recall | Balanced trade-off metric |
+            | **ROC AUC** | Area under the ROC curve (0.5 = random) | Overall discrimination ability |
+            | **Brier Score** | Mean squared error of probabilities (lower = better) | Calibration quality |
+            | **Confusion Matrix** | TN, FP, FN, TP breakdown | Shows *where* errors occur |
+            """)
+
+            st.caption(
+                f"ℹ️  All metrics computed at **threshold = {PREDICTION_THRESHOLD:.0%}** on the "
+                f"held-out test set (months 10–12 of 2024)."
+            )
 
 
 # Entry point

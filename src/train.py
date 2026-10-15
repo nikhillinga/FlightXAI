@@ -20,6 +20,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
     brier_score_loss,
+    confusion_matrix,
     f1_score,
     precision_score,
     recall_score,
@@ -59,10 +60,24 @@ def _evaluate_model(
     X_test: pd.DataFrame,
     y_test: pd.Series,
     threshold: float = PREDICTION_THRESHOLD,
-) -> tuple[dict[str, float], pd.Series]:
+) -> tuple[dict, pd.Series]:
     """Compute classification metrics and predicted probabilities for a model."""
     y_prob = model.predict_proba(X_test)[:, 1]
     y_pred = (y_prob >= threshold).astype(int)
+
+    # Confusion matrix: [[TN, FP], [FN, TP]]
+    cm = confusion_matrix(y_test, y_pred).tolist()
+
+    # ROC curve data points (down-sampled to keep JSON size reasonable)
+    fpr, tpr, _ = roc_curve(y_test, y_prob)
+    # Keep at most 200 points for smooth curves without bloat
+    if len(fpr) > 200:
+        step = max(1, len(fpr) // 200)
+        fpr = fpr[::step].tolist()
+        tpr = tpr[::step].tolist()
+    else:
+        fpr = fpr.tolist()
+        tpr = tpr.tolist()
 
     metrics = {
         "accuracy": round(float(accuracy_score(y_test, y_pred)), 4),
@@ -71,6 +86,8 @@ def _evaluate_model(
         "f1_score": round(float(f1_score(y_test, y_pred, zero_division=0)), 4),
         "roc_auc": round(float(roc_auc_score(y_test, y_prob)), 4),
         "brier_score": round(float(brier_score_loss(y_test, y_prob)), 4),
+        "confusion_matrix": cm,
+        "roc_curve": {"fpr": fpr, "tpr": tpr},
     }
     return metrics, y_prob
 
